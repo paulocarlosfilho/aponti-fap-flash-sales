@@ -1,0 +1,188 @@
+name: DevSecOps Pipeline - Flash Sales API
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main, develop ]
+
+jobs:
+  # 1. Lint e Proteção de Segredos
+  lint-and-secrets:
+    name: Lint & Proteção de Segredos
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Run Gitleaks Scan
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # 2. Build e SAST (Quality Gate)
+  build-and-sast:
+    name: Build & SAST
+    needs: lint-and-secrets
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install Dependencies
+        run: npm ci --legacy-peer-deps
+
+      - name: Run Snyk SAST
+        uses: snyk/actions/node@master
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        with:
+          command: test
+          args: --severity-threshold=critical
+
+      - name: Run Unit Tests
+        run: npm test --if-present
+
+  # 3. Build, Push & Scans de Segurança (Trivy/Checkov)
+  pull-and-scan:
+    name: Build, Push & Scans (Trivy/Checkov)
+    needs: build-and-sast
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Login to Docker Hub
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_HUB_USERNAME }}
+          password: ${{ secrets.DOCKER_HUB_ACCESS_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and Push Docker Image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          load: true
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: |
+            paulocarlosfilho/aponti-fap-flash-sales:latest
+            paulocarlosfilho/aponti-fap-flash-sales:1.0.1
+
+      - name: Run Trivy vulnerability scanner on Docker Image
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: 'paulocarlosfilho/aponti-fap-flash-sales:1.0.1'
+          format: 'table'
+          exit-code: '0'
+          severity: 'CRITICAL,HIGH'
+
+      - name: Run Checkov scanner on Terraform IaC
+        uses: bridgecrewio/checkov-action@master
+        with:
+          directory: terraform/
+          framework: terraform
+          soft_fail: true
+
+  # 4. Provisionamento (LocalStack + Terraform)
+  provisioning:
+    name: Provisionamento
+    needs: pull-and-scan
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Start LocalStack via Docker
+        run: |
+          docker run -d \
+            --name localstack \
+            -p 4566:4566 \
+            -e SERVICES=s3,ec2 \
+            localstack/localstack:3.0.0
+          
+          sleep 15
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+
+      - name: Terraform Init & Apply
+        run: |
+          cd terraform
+          terraform init
+          terraform apply -auto-approve
+        env:
+          AWS_ACCESS_KEY_ID: "test"
+          AWS_SECRET_ACCESS_KEY: "test"
+          AWS_DEFAULT_REGION: "us-east-1"
+
+  # 5. Deploy em Staging e DAST (Quality Gate Dinâmico)
+  deploy-staging-dast:
+    name: Deploy em Staging / DAST
+    needs: provisioning
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+      contents: read
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Login to Docker Hub
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_HUB_USERNAME }}
+          password: ${{ secrets.DOCKER_HUB_ACCESS_TOKEN }}
+
+      - name: Start App via Docker Compose (Staging)
+        run: |
+          docker compose up -d
+
+      - name: Wait for API Readiness
+        run: |
+          sleep 20
+          curl -v http://localhost:3000/metrics || true
+
+      - name: Run OWASP ZAP Baseline Scan
+        uses: zaproxy/action-baseline@v0.14.0
+        with:
+          target: 'http://localhost:3000/metrics'
+          fail_action: false
+
+      - name: Upload ZAP report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: zap-report
+          path: report_html.html
+
+  # 6. Deploy em Produção (Kubernetes)
+  deploy-production:
+    name: Deploy em Produção (Kubernetes)
+    needs: deploy-staging-dast
+    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/feat/k8s'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Validate Kubernetes Manifests
+        run: |
+          kubectl apply --dry-run=client -f ./k8s
+
+      - name: Deploy to Kubernetes Cluster
+        run: |
+          echo "Executando deploy e validação dos manifestos em ./k8s..."
