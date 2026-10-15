@@ -75,6 +75,7 @@ jobs:
         with:
           context: .
           file: ./Dockerfile
+          load: true
           push: ${{ github.event_name != 'pull_request' }}
           tags: |
             paulocarlosfilho/aponti-fap-flash-sales:latest
