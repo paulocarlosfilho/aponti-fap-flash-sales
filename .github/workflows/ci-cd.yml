@@ -152,7 +152,11 @@ jobs:
           docker compose up -d
 
       - name: Wait for API
-        run: sleep 20
+        run: |
+            sleep 20
+            echo "Aguardando inicialização dos containers..."
+            sleep 20
+            curl -v http://localhost:8080/metrics || true
 
       - name: Run OWASP ZAP Scan
         uses: zaproxy/action-full-scan@v0.12.0
