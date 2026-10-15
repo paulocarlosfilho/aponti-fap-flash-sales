@@ -7,6 +7,8 @@ const router = Router();
 const checkoutController = new CheckoutController();
 const exportController = new ExportController();
 
+router.get("/health", (req, res) => res.status(200).json({ status: "ok" }));
+
 router.post("/checkout", (req, res, next) => checkoutController.handle(req, res).catch(next));
 router.post("/tickets/export", (req, res, next) => exportController.handle(req, res).catch(next));
 router.get("/metrics", metricsController);
