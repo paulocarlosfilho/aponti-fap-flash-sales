@@ -1,8 +1,8 @@
-name: DevSecOps Pipeline - API
+name: DevSecOps Pipeline - Flash Sales API
 
 on:
   push:
-    branches: [ main, develop ]
+    branches: [ main, develop]
   pull_request:
     branches: [ main, develop ]
 
@@ -46,10 +46,10 @@ jobs:
           SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
         with:
           command: test
-          args: --severity-threshold=critical # Só falha a pipeline se encontrar vulnerabilidade CRÍTICA
+          args: --severity-threshold=critical
 
       - name: Run Unit Tests
-        run: npm run test:unit --if-present
+        run: npm test --if-present
 
   # 3. Build, Push & Scans de Segurança (Trivy/Checkov)
   pull-and-scan:
@@ -62,9 +62,10 @@ jobs:
 
       - name: Login to Docker Hub
         uses: docker/login-action@v3
+        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
         with:
           username: ${{ secrets.DOCKER_HUB_USERNAME }}
-          password: ${{ secrets.DOCKER_HUB_ACCESS_TOKEN_CONTRATOS }}
+          password: ${{ secrets.DOCKER_HUB_ACCESS_TOKEN }}
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -76,13 +77,13 @@ jobs:
           file: ./Dockerfile
           push: true
           tags: |
-           paulocarlosfilho/contratos-api:latest
-           paulocarlosfilho/contratos-api:1.0.1
+            paulocarlosfilho/aponti-fap-flash-sales:latest
+            paulocarlosfilho/aponti-fap-flash-sales:1.0.1
 
       - name: Run Trivy vulnerability scanner on Docker Image
         uses: aquasecurity/trivy-action@master
         with:
-          image-ref: 'paulocarlosfilho/contratos-api:1.0.1'
+          image-ref: 'paulocarlosfilho/aponti-fap-flash-sales:1.0.1'
           format: 'table'
           exit-code: '0'
           severity: 'CRITICAL,HIGH'
@@ -142,19 +143,19 @@ jobs:
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKER_HUB_USERNAME }}
-          password: ${{ secrets.DOCKER_HUB_ACCESS_TOKEN_CONTRATOS }}
+          password: ${{ secrets.DOCKER_HUB_ACCESS_TOKEN }}
 
       - name: Start App via Docker Compose (Staging)
         run: |
           docker compose up -d
 
       - name: Wait for API
-        run: sleep 15
+        run: sleep 20
 
       - name: Run OWASP ZAP Scan
         uses: zaproxy/action-full-scan@v0.12.0
         with:
-          target: 'http://localhost:3000/metrics'
+          target: 'http://localhost:8080/metrics'
           fail_action: false
           artifact_name: ''
         
@@ -165,16 +166,20 @@ jobs:
           name: zap-report
           path: report.html
 
-  # 6. Deploy em Produção
+  # 6. Deploy em Produção (Kubernetes)
   deploy-production:
-    name: Deploy em Produção
+    name: Deploy em Produção (Kubernetes)
     needs: deploy-staging-dast
-    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/paulocarlos'
+    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/feat/k8s'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      - name: Deploy to Production Environment
+      - name: Validate Kubernetes Manifests
         run: |
-          echo "Executando deploy automatizado e seguro em produção..."
+          kubectl apply --dry-run=client -f ./k8s
+
+      - name: Deploy to Kubernetes Cluster
+        run: |
+          echo "Executando deploy e validação dos manifestos em ./k8s..."
