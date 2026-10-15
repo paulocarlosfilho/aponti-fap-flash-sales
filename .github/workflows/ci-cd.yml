@@ -151,11 +151,14 @@ jobs:
         run: |
           docker compose up -d
 
-      - name: Wait and Check Running Containers
+      - name: Verify Running Containers & Logs
         run: |
-          sleep 20
+          echo "=== Estado dos Containers ==="
           docker compose ps
-          docker compose logs
+          echo "=== Esperando inicialização da API ==="
+          sleep 20
+          echo "=== Testando conectividade HTTP ==="
+          curl -v http://localhost:8080/metrics || curl -v http://localhost:3000/metrics || true
 
       - name: Run OWASP ZAP Baseline Scan
         uses: zaproxy/action-baseline@v0.14.0
