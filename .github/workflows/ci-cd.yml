@@ -179,9 +179,15 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      - name: Validate Kubernetes Manifests
+      - name: Setup Kubeconform
         run: |
-          kubectl apply --dry-run=client --validate=false -f ./k8s
+          curl -sSLo kubeconform.tar.gz https://github.com/yannh/kubeconform/releases/latest/download/kubeconform-linux-amd64.tar.gz
+          tar xf kubeconform.tar.gz
+          sudo mv kubeconform /usr/local/bin/
+
+      - name: Validate Kubernetes Manifests Offline
+        run: |
+          kubeconform -summary -strict ./k8s
 
       - name: Deploy to Kubernetes Cluster
         run: |
